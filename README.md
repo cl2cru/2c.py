@@ -15,22 +15,39 @@ Usage:
        python 2c.py [options] filename.py
  
 Options:
+
   -h, --help             show this help message and exit
+  
   -e, --build-executable build executable (not extension module)
+  
   --show-debug           show compiler debug messages
+  
   --no-line-numbers      supress line number code
+  
   --added-pass-subscr    add pass to evaluate type indexing
+  
   --use-gcc-extension    use gcc extension
+  
   --no-generate-comments supress internal tree comment
+  
   -c, --no-compile       only generate C-code, no compile
+  
   -i, --indent           run 'indent' for generated C file
+  
   --no-direct-call       supress direct C call convenction
+  
   --decompiler-print     print decompilation psevdocode
+  
   --optimiser-debug      trace C-code optimisation
+  
   --no-optimiser         no text optimisation
+  
   --inline-subst         inline subst of small's def
+  
   -f OPT_FLAG, --compiler-flag=OPT_FLAG
+  
   -n C_NAME, --c-named-as=C_NAME
+  
   --use-cfunc            generate cfunc (obsolete)
 
        
