@@ -476,6 +476,7 @@ set_not_attempt = set(('CONST', 'FAST', '!BUILD_LIST', 'CALC_CONST', ##'!LOAD_BU
 build_executable = False
 fast_globals = False
 no_compiled = {}
+detect_attr_type = False # for fix test_ast.py
 detected_attr_type = {}
 detected_return_type = {}
 default_args = {}
@@ -1822,11 +1823,12 @@ def clear_one_file():
     uniq_debug_messages.clear()
     type_def.clear()
     fastglob.clear()
-    dict_global_used_at_generator.clear()
+    ## dict_global_used_at_generator.clear()
     global_type.clear()
     local_type.clear()
     detected_global_type.clear()
     predeclared_chars.clear()
+    clear_noglob()
     ## calc_const_new_class.clear()
     ## calc_const_old_class.clear()
     ## calc_const_any_class.clear()
@@ -2378,14 +2380,19 @@ def post_disassemble():
     SetPass('FindUnusedFastVar')
     for current_co, cmds in seqcode:
         current_co.find_unused_fast_var()
+        
     SetPass('FirstRepl')
 
     single_define = [k for k,v in count_define_set.items() \
                            if v == 1 and (k in count_define_get or k == '__all__')]
+                           
+    only_define = [k for k,v in count_define_set.items() \
+                           if v == 1 and (k not in count_define_get or k == '__all__')]                           
+    no_define = [k for k,v in count_define_get.items() \
+                           if (k not in count_define_set or k == '__all__')]     
     for current_co, cmds in seqcode:   
         is_can_be_codefunc = current_can_be_codefunc()
         cmds[1] = ortogonal(cmds[1], repl) 
-
 
     SetPass('FindCalcConst')
     initcod = None
@@ -2406,7 +2413,10 @@ def post_disassemble():
     for k in do_del:       
         if k in single_define:
             del single_define[single_define.index(k)] 
-                 
+    for k in only_define:
+        add_noglob(k)             
+    for k in no_define:
+        add_noglob(k)  
     ## res = False
     SetPass('ImportManipulation')
 
@@ -2592,6 +2602,9 @@ def post_disassemble():
     SetPass('LabelMethod')
     for current_co, cmds in seqcode:
         current_co.mark_method_class()
+        
+    SetPass('CollectNoGlob')
+    pass_find_noglob()
         
     SetPass('Formire')   
     for current_co, cmds in seqcode:        
@@ -10732,6 +10745,7 @@ class Out(list):
                 Used(t[2])
                 assign_py = type(t[0]) is tuple and \
                     (t[0][0] == 'PY_TEMP' or t[0].startswith('GETLOCAL('))
+                    
                 t = [CVar(x) for x in t]
                 self.append(do_str(t))
                 self.append_cline()
@@ -29789,7 +29803,18 @@ def class_create_to_dict_create(nm):
 
         return None
     return DictFromArgs(tuple(dic))
-           
+     
+## def repl_list(a, up):
+    ## a1 = a[:]
+    ## a2 = _repl_list(a,up)
+    ## if a1 != a2:
+        ## print '{{{'
+        ## pprint(a1)
+        ## print '---'             
+        ## pprint(a2)
+        ## print '}}}'
+    ## return a2
+ 
 def repl_list(a, up):
     i = 0
     assert type(a) is list
@@ -30042,7 +30067,7 @@ def repl_list(a, up):
             if TCmp(aa[i:i+3], v, [('STORE', (('STORE_NAME', '?'),), ('?',)),
                                     ('.L', '?'),
                                    ('STORE', (('STORE_NAME', '?'),), ('?',))]) and v[0] == v[3]:
-                cnt_e = count_expr_in_expr(('FAST', v[0]), v[4])
+                cnt_e = count_expr_in_expr(('!LOAD_NAME', v[0]), v[4])
                 if cnt_e == 0:
                     del aa[i]
                     updated = True
@@ -31584,7 +31609,7 @@ def repl(ret): ## can_be_codefunc
         if len(ret) == 4 and ret[2] == ('CONST', 1) and ret[3] == 'Py_None':
             return ret[1]        
         if len(ret) == 4 and ret[2] == ('CONST', 0) and ret[3] == 'Py_None':
-            return ('CONST', 0)  
+            return ('CONST', 1)  
         if len(ret) == 4 and ret[1][0] == 'FAST' and ret[2] == ('CONST', 2) and ret[3] == 'Py_None':
             return ('!PyNumber_Multiply', ret[1], ret[1])                    
     elif r0 == '!_EQ_':
@@ -31845,14 +31870,14 @@ def repl(ret): ## can_be_codefunc
             return ('CONST', True)
         if ret[2] == ('CONST', (False,)):
             return ('CONST', False)
-        if ret[2][0] == 'CONST':
-            t = TypeExpr(ret[2])
-            if IsTuple(t):
-                return ('CONST', len(ret[2][1]) != 0) 
+        if ret[2][0] == 'CONST' and len(ret[2][1]) == 1:
+            t = TypeExpr(('CONST', ret[2][1][0]))
+            if IsTuple(t) or IsStr(t):
+                return ('CONST', len(ret[2][1][0]) != 0) 
             if IsInt(t) or IsFloat(t):
-                return ('CONST', ret[2][1] != 0) 
+                return ('CONST', ret[2][1][0] != 0) 
             if IsComplex(t):
-                return ('CONST', ret[2][1] != complex(0,0)) 
+                return ('CONST', ret[2][1][1] != complex(0,0)) 
             print t, ret
             assert False
     if len(ret) == 2 and  \
@@ -31884,6 +31909,7 @@ def DoRegClass(v0, v1, v1_1):
         new = False
         li  = {}
         l_1 = len(v1_1[0][1])
+        ## pprint(v1_1)
         for der in v1_1[0][1]:
             if der[0] == '!LOAD_BUILTIN':
                 new = True
@@ -31892,19 +31918,23 @@ def DoRegClass(v0, v1, v1_1):
                 if IsOldClass(der[1]):
                     old = True
                     li[('!CALC_CONST', der[1])] = True
-                elif IsNewClass(der[1]):
+                if IsNewClass(der[1]):
                     new = True
                     li[('!CALC_CONST', der[1])] = True
-                else:
+                if not IsNewClass(der[1]) and not IsOldClass(der[1]):
+                    old, new = True, True
                     Debug('Not name CalcConst???Class', v1)
             elif der[0] == '!PyObject_GetAttr':        
-                pass
+                old, new = True, True
             elif der[0] == '!PyObject_Type':        
                 Debug('Not name CalcConst???Class', v1)
+                old, new = True, True
             elif der[0] == '!PyObject_Call':        
                 Debug('Not name CalcConst???Class', v1)
+                old, new = True, True
             else:
                 Debug('Not name CalcConst???Class', v1, der)
+                old, new = True, True
         RegClass(v0, old, new, li.keys(), l_1, l_1 == len(li.keys()))
     else:    
         pp(v1_1[0], v1_1[0][0], v1_1)
@@ -32980,7 +33010,7 @@ def TypeExpr(ret):
                 Debug('Undefined type attrib: %s -> %s ()' % (t1, ret[2][1]), ret)
                 if IsKlNone(t1):
                     return None
-        if ret[2][1] in detected_attr_type and not redefined_all:
+        if detect_attr_type and ret[2][1] in detected_attr_type and not redefined_all:
             r = detected_attr_type[ret[2][1]] 
             if IsBuiltFunc(r) and (not IsModule(t1) or 'self' in repr(ret)):
                 if (IsList(t1) or IsTuple(t1) or IsDict(t1) or t1 == Kl_Set) and ret[2][1][:2] != '__':
@@ -33939,6 +33969,7 @@ def upgrade_op2(ret, nm = None):
                             ('CONST', '?'))):
                     if IsOldClass(v[0]):
                         if not Is3(v[0], 'HaveMetaClass') and not IsNewClass(v[0]):  ## and not have_metaclass(v[0][0]):
+                            ## print '=NewSeqDepr', subret
                             return ('!CLASS_CALC_CONST', v[0], ('CONST', v[1]))
                     elif IsNewClass(v[0]):
                         if not IsOldClass(v[0]):
@@ -34522,14 +34553,20 @@ def gen_for_all_known(it, ret, ref_self):
         if type(t2) is str:
             isnewclass = t2 == T_NEW_CL_INST
             isoldclass = t2 == T_OLD_CL_INST
-            if isnewclass:
-                o.Raw('if (((PyObject *)Py_TYPE(',ref_self,')) == ', ('CALC_CONST', nmclass), ') {')
-            elif isoldclass:    
-                o.Raw('if (PyInstance_Check(', ref_self,') && ((PyInstanceObject *)', ref_self,\
-                    ')->in_class == (PyClassObject*)', ('CALC_CONST', nmclass), ') {')
+            if global_used_at_generator(nmclass):
+                print it
+                print ret
+                print nmclass
+                assert False                
             else:
-                Fatal('Not instance', _self2)
-                assert False
+                if isnewclass:
+                    o.Raw('if (((PyObject *)Py_TYPE(',ref_self,')) == ', ('CALC_CONST', nmclass), ') {')
+                elif isoldclass:    
+                    o.Raw('if (PyInstance_Check(', ref_self,') && ((PyInstanceObject *)', ref_self,\
+                        ')->in_class == (PyClassObject*)', ('CALC_CONST', nmclass), ') {')
+                else:
+                    Fatal('Not instance', _self2)
+                    assert False
         elif t2 in type_to_check:
             o.Raw('if (', type_to_check[t2],  '(', ref_self,')) {')
         elif t2 in type_to_check_t:
@@ -37049,10 +37086,16 @@ def AssignCalcConst(nm, ref, o, expr):
     if is_mnemonic_const(nm):
 ##        Fatal('??? Assign mnemoconst', nm, ref, expr, o)
         return
+    if global_used_at_generator(nm):
+        print nm
+        assert False
+ 
     o.Stmt(calc_const_to(nm), '=', ref);
     if is_pypy:
         o.INCREF(ref)
     for a,b,c in Iter3(nm, 'ModuleAttr', None):
+        if global_used_at_generator((nm, c)):
+            continue
         if c != '.__dict__' or is_pypy:
             r = New()
             o.Stmt(r, '=', 'PyObject_GetAttr', ref, ('CONST', c))
@@ -37356,9 +37399,10 @@ def generate_store(it, ref, o, expr):
     if it[0] == 'STORE_CALC_CONST':
         it = it[1]
         assert type(it) is tuple
-        AssignCalcConst(it[1], ref, o, expr)
+        ## AssignCalcConst(it[1], ref, o, expr)
         if fast_globals and it[1] not in d_built and (it[1][0] != '_' or build_executable) \
            and not redefined_all  and not global_used_at_generator(it[1]):
+            AssignCalcConst(it[1], ref, o, expr)
             if not istempref(ref) and not IsCTypedGlobal(it[1]) :
                 o.INCREF(ref)
             add_fast_glob(it[1])
@@ -37372,6 +37416,8 @@ def generate_store(it, ref, o, expr):
             if istempref(ref) and ref not in g_refs2:
                 o.Raw(ref, ' = 0;')            
         elif it[0] == 'STORE_GLOBAL' or (it[0] == 'STORE_NAME' and func == 'Init_filename'):
+            if not global_used_at_generator(it[1]):
+                AssignCalcConst(it[1], ref, o, expr)
             o.Stmt('PyDict_SetItem', 'glob', ('CONST', it[1]), ref)
             ## if func == 'Init_filename':
                 ## o.INCREF(ref)
@@ -37379,6 +37425,7 @@ def generate_store(it, ref, o, expr):
             if istempref(ref):
                 o.Cls(ref)
         elif it[0] == 'STORE_NAME':
+            AssignCalcConst(it[1], ref, o, expr)
             o.Stmt('PyObject_SetItem', 'f->f_locals', ('CONST', it[1]), ref)
         else:
             Fatal('generate_store', it)
@@ -38036,7 +38083,7 @@ def Expr(o, it):
 def Str_for_C(s):
     r = ''
     for c in s:
-        if c.isalnum() or c == ' ':
+        if (c.isalnum() or c == ' ') and not (('a' >= c >= 'f') or ('A' >= c >= 'F')):
             r  += c
         elif c == '\n':
             r += '\\n'
@@ -38506,6 +38553,12 @@ def GenExpr(it,o, forcenewg=None,typed=None, skip_float = None):
         ref2 = New(None,forcenewg)
         CType2Py(o, ref2, cnm, t)
         return ref2 
+
+    if head == 'CALC_CONST' and type(it[1]) is tuple and it[1] not in d_built and global_used_at_generator(it[1]):
+        return GenExpr(('!PyObject_GetAttr', ('CALC_CONST', it[1][0]), ('CONST', it[1][1])),o, forcenewg)
+
+    if head == 'CALC_CONST' and type(it[1]) is not tuple and it[1] not in d_built and global_used_at_generator(it[1]):
+        return GenExpr(('!LOAD_GLOBAL', it[1]),o, forcenewg)
             
     if head[0] == '!':
         tempor = True
@@ -44116,7 +44169,9 @@ def is_tuple_pack_arg(g, d):
     if type(g) is not tuple:
         return False
     if g[0] == 'CALC_CONST' and not IsCType(TypeExpr(g)):
-        return True
+        if not global_used_at_generator(g[1]):
+            return True
+        return False
     if g[0] in ('glob', '_f_locals', 'f->f_locals == 0 ? Py_None : f->f_locals', 'Py_None'):
         return True    
     elif g[0] == 'CONST':
@@ -44209,12 +44264,16 @@ def CVar(g):
         elif istemptyped(g):
             ret = typed_gen[g[1]][1] + '_' + str(g[1])
         elif g[0] == 'CALC_CONST':
-            if calculated_const[g[1]].is_mnemonic_constant:
-                return CVar(calculated_const[g[1]].mnemonic_constant_value)
-            elif type(calculated_const[g[1]].nm) is str:
-                ret = 'calculated_const_' + calculated_const[g[1]].nm 
+            if not global_used_at_generator(g[1]):
+                if calculated_const[g[1]].is_mnemonic_constant:
+                    return CVar(calculated_const[g[1]].mnemonic_constant_value)
+                elif type(calculated_const[g[1]].nm) is str:
+                    ret = 'calculated_const_' + calculated_const[g[1]].nm 
+                else:
+                    ret = 'calculated_const_' + str(calculated_const[g[1]].no)
             else:
-                ret = 'calculated_const_' + str(calculated_const[g[1]].no)
+                print g
+                assert False
         elif g[0] == 'CONST':
             ret = const_to(g[1])
         elif g[0] == 'BUILTIN':
@@ -44251,24 +44310,59 @@ def CVar(g):
     assert type(ret) is str
     return ret
 
-dict_global_used_at_generator = {}
-def global_used_at_generator(nm):
-    if nm in dict_global_used_at_generator:
-        return bool(dict_global_used_at_generator[nm])
-    load_ = ('!LOAD_GLOBAL', nm)
-    stor_ = ('STORE_GLOBAL', nm)
-    dele_ = ('DELETE_GLOBAL', nm)
-    dic = {load_:1, stor_:1, dele_:1}
-    for co in all_co.itervalues():
-        assert type(co) is code_extended
-        if not co.can_be_codefunc():
-            if exprs_in_expr(dic, co.cmds[1]):
-                dict_global_used_at_generator[nm] = True
-                return True
-    dict_global_used_at_generator[nm] = False        
-    return False    
-    
+d_noglob = {}
+d_pre_generator = frozenset(('!LOAD_GLOBAL', 'CALC_CONST', 'STORE_GLOBAL', 'DELETE_GLOBAL','!LOAD_NAME'))
+d_pre_codefunc = frozenset(('!LOAD_NAME'))
+ 
+def clear_noglob():
+    global d_noglob
+    d_noglob.clear()
 
+def add_noglob(a):
+    global d_noglob
+    d_noglob[a] = True
+    
+def collect_noglob(a):
+    global d_noglob
+    if type(a) is list:
+        for x in a:
+            collect_noglob(x)
+        return
+    if type(a) is tuple:
+        if len(a) >= 2 and type(a[0]) is str:
+            if a[0] == 'CONST':
+                return
+            if is_can_be_codefunc:
+                if a[0] in d_pre_codefunc:
+                    d_noglob[a[1]] = True
+                    return
+            else:
+                if a[0] in d_pre_generator:
+                    d_noglob[a[1]] = True
+                    return
+                
+        for x in a:
+            if type(x) is tuple:
+                collect_noglob(x)
+    return
+
+def pass_find_noglob():
+    global current_co, is_can_be_codefunc, d_noglob
+    
+    for current_co, cmds in seqcode:
+        is_can_be_codefunc = current_can_be_codefunc()    
+        collect_noglob(cmds[1])
+    for k in d_noglob.keys():
+        if type(k) is tuple:
+            d_noglob[k[0]] = True
+    for k in d_noglob.keys():
+        for a,b,c in Iter3(k, 'ModuleAttr', None):
+            d_noglob[(k, c)] = True
+
+def global_used_at_generator(nm):
+    global d_noglob
+    return nm in d_noglob or (type(nm) is str and (nm.startswith('__') and nm.endswith('__')))
+ 
 def load_builtin(c):
     global loaded_builtin
     assert c in d_built
@@ -44296,6 +44390,8 @@ def generate_calculated_consts(first2):
             continue
         if obj.generate:
             if IsCType(TypeExpr(('!LOAD_GLOBAL', k))) and not redefined_all and build_executable:
+                continue
+            if global_used_at_generator(k):
                 continue
             if type(k) is str:
                 first2.print_to('static PyObject * calculated_const_' + k + ' = 0;')
@@ -46731,6 +46827,9 @@ def expr_to_s(it1, patt, L1, t1, checktupl, checktuplerr, is_obj):
             if it1[0] == 'PY_TYPE':
                 if it1[3][0] == 'FAST' and not IsCVar(it1[3]) and IsCType(t1):
                     listch.append(('O' + L1,  ConC(it1[3])))    
+                if it1[3][0] == '!@PyInt_FromSsize_t':
+                    if not IsCVar(it1[3][2]) and it1[3][2][0] == 'FAST':
+                        listch.append(('O' + L1,  ConC(it1[3][2])))
             if it1[0] == '!@PyInt_FromSsize_t':
                 if not IsCVar(it1[2]) and it1[2][0] == 'FAST':
                     listch.append(('O' + L1,  ConC(it1[2])))   
@@ -46788,6 +46887,7 @@ def expr_to_s(it1, patt, L1, t1, checktupl, checktuplerr, is_obj):
 
                     cref_nm = ConC('consts[', ind_const, ']')
                     listch.append(('O' + L1,  cref_nm))   
+
         ## print ';;;', (patt, L1, s, checktupl, checktuplerr, listch, is_obj), it1
         patt, checktupl, checktuplerr = repl_L1(patt, L1, s, checktupl, checktuplerr, listch)
         it1 = None
@@ -47122,6 +47222,10 @@ def IsNewClass(nm):
 def IsOldClass(nm):
     if nm not in calculated_const:
         return False
+    ## if nm == 'NewSeqDeprecated':
+        ## print '=isold', calculated_const[nm].__dict__
+    ## if nm == 'NewSeq':
+        ## print '=isnew', calculated_const[nm].__dict__
     return bool(calculated_const[nm].isoldclass)
 
 def RegisterAnyClass(cl_nm):
@@ -47131,12 +47235,15 @@ def RegisterNewClass(cl_nm, father, cnt_fathers = None, know_all_fathers = None)
     RegClass(cl_nm, False, True, father, cnt_fathers, know_all_fathers)
         
 def RegisterOldClass(cl_nm, father, cnt_fathers = None, know_all_fathers = None):
+    ## print '===', cl_nm
     RegClass(cl_nm, True, False, father, cnt_fathers, know_all_fathers)
         
 def RegClass(nm, is_old, is_new, derived_from, cnt_fathers = None, know_all_fathers = None):
     assert nm in calculated_const
     assert type(is_old) is bool
     assert type(is_new) is bool
+    ## print (nm, is_old, is_new, derived_from, cnt_fathers, know_all_fathers)
+    ## assert nm != 'NewSeqDeprecated'
 
     c = calculated_const[nm]
     if is_old and not Is3(nm, 'HaveMetaClass'):
@@ -47198,6 +47305,7 @@ def calc_const_to(k):
         if calculated_const[k].is_mnemonic_constant:
             return calculated_const[k].mnemonic_constant_value
         return ('CALC_CONST', k)
+    ## assert not global_used_at_generator(k)
     calculated_const[k] = CalcConst(k, len(calculated_const)) 
     return ('CALC_CONST', k)
 
